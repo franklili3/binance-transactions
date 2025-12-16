@@ -93,7 +93,7 @@ class BinanceTransactions:
             raise
         except ccxt.NetworkError as e:
             logger.error(f"网络连接错误: {e}")
-            logger.error("请检查网络连接，或者是否需要使用代理")
+            logger.error("请检查网络连接")
             raise
         except ccxt.ExchangeError as e:
             logger.error(f"交易所错误: {e}")
