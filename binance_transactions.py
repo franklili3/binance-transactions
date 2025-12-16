@@ -349,9 +349,16 @@ class BinanceTransactions:
         if not positions_data:
             return pd.DataFrame()
         
-        # 创建时间序列（使用最近30天的日期范围）
-        end_date = pd.Timestamp.now(tz='UTC')
-        date_range = pd.date_range(start=end_date - pd.Timedelta(days=30), end=end_date, freq='D')
+        # 创建时间序列（与交易数据的日期范围一致）
+        if transactions_df is not None and not transactions_df.empty:
+            # 使用交易数据的日期范围
+            start_date = transactions_df.index.min()
+            end_date = transactions_df.index.max()
+            date_range = pd.date_range(start=start_date, end=end_date, freq='D')
+        else:
+            # 如果没有交易数据，使用最近30天的日期范围
+            end_date = pd.Timestamp.now(tz='UTC')
+            date_range = pd.date_range(start=end_date - pd.Timedelta(days=30), end=end_date, freq='D')
         
         # 创建positions DataFrame
         positions_df = pd.DataFrame(index=date_range)
@@ -444,14 +451,12 @@ class BinanceTransactions:
         # 计算开始时间
         since = int((datetime.now() - pd.Timedelta(days=days)).timestamp() * 1000)
         
-        # 获取数据
+        # 获取数据（只获取交易记录）
         transactions = self.get_all_transactions(symbol=symbol, since=since)
-        orders = self.get_all_orders(symbol=symbol, since=since)
-        positions = self.get_positions()
         
         # 转换为pyfolio格式
         transactions_df = self.transactions_to_pyfolio_format(transactions)
-        positions_df = self.positions_to_pyfolio_format(positions, transactions_df)
+        positions_df = self.positions_to_pyfolio_format(None, transactions_df)
         returns_series = self.calculate_returns(transactions_df)
         
         # 保存数据
@@ -467,8 +472,6 @@ class BinanceTransactions:
         # 打印摘要
         logger.info("=== 数据摘要 ===")
         logger.info(f"交易记录数量: {len(transactions)}")
-        logger.info(f"订单记录数量: {len(orders)}")
-        logger.info(f"当前持仓数量: {len([p for p in positions if float(p['contracts']) != 0])}")
         
         if not transactions_df.empty:
             logger.info(f"总交易额: {transactions_df['txn_volume'].sum():.2f} USDT")
