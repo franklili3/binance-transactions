@@ -244,6 +244,92 @@ class BinanceTransactions:
             logger.error(f"获取持仓信息失败: {e}")
             return []
     
+    def get_balance(self):
+        """
+        获取账户余额信息
+        
+        Returns:
+            dict: 余额信息字典，包含各资产的余额
+        """
+        try:
+            balance = self.exchange.fetch_balance()
+            
+            # 提取非零余额
+            non_zero_balance = {}
+            if 'total' in balance:
+                for asset, amount in balance['total'].items():
+                    if amount > 0:
+                        non_zero_balance[asset] = amount
+            
+            logger.info(f"获取到 {len(non_zero_balance)} 个非零余额资产")
+            for asset, amount in non_zero_balance.items():
+                logger.info(f"{asset}: {amount}")
+            
+            return non_zero_balance
+        except Exception as e:
+            logger.error(f"获取余额信息失败: {e}")
+            return {}
+    
+    def balance_to_pyfolio_format(self, balance_data, transactions_df=None):
+        """
+        将余额信息转换为pyfolio格式的positions数据
+        
+        Args:
+            balance_data (dict): 余额信息字典
+            transactions_df (pd.DataFrame): 交易数据，用于确定日期范围
+            
+        Returns:
+            pd.DataFrame: pyfolio格式的持仓数据
+        """
+        if not balance_data:
+            return pd.DataFrame()
+        
+        # 创建时间序列（与交易数据的日期范围一致）
+        if transactions_df is not None and not transactions_df.empty:
+            # 使用交易数据的日期范围，获取所有唯一的日期
+            unique_dates = transactions_df.index.normalize().unique()
+            # 按日期排序
+            date_range = pd.DatetimeIndex(sorted(unique_dates))
+        else:
+            # 如果没有交易数据，使用当前日期
+            date_range = pd.DatetimeIndex([pd.Timestamp.now(tz='UTC').normalize()])
+        
+        # 创建positions DataFrame
+        positions_df = pd.DataFrame(index=date_range)
+        
+        # 为每个资产添加持仓价值列
+        total_usdt_value = 0
+        for asset, amount in balance_data.items():
+            if asset == 'USDT':
+                # USDT直接作为现金
+                positions_df['USDT'] = amount
+                total_usdt_value += amount
+            elif asset == 'BUSD':
+                # BUSD也作为现金（稳定币）
+                positions_df['USDT'] = positions_df.get('USDT', 0) + amount
+                total_usdt_value += amount
+            else:
+                # 其他资产需要估算价值（简化处理，假设1:1与USDT）
+                # 在实际应用中，应该获取实时价格
+                if asset in ['BTC', 'ETH', 'BNB']:
+                    # 主要加密货币，使用估算价值
+                    estimated_value = amount * 50000 if asset == 'BTC' else amount * 3000 if asset == 'ETH' else amount * 300
+                    positions_df[asset] = estimated_value
+                    total_usdt_value += estimated_value
+                else:
+                    # 其他资产，保守估算
+                    estimated_value = amount * 1
+                    positions_df[asset] = estimated_value
+                    total_usdt_value += estimated_value
+        
+        # 如果没有USDT列，创建一个
+        if 'USDT' not in positions_df.columns:
+            positions_df['USDT'] = 0.0
+        
+        logger.info(f"总资产价值估算: {total_usdt_value:.2f} USDT")
+        
+        return positions_df
+    
     def transactions_to_pyfolio_format(self, transactions):
         """
         将交易记录转换为pyfolio格式
@@ -451,12 +537,20 @@ class BinanceTransactions:
         # 计算开始时间
         since = int((datetime.now() - pd.Timedelta(days=days)).timestamp() * 1000)
         
-        # 获取数据（只获取交易记录）
+        # 获取数据
         transactions = self.get_all_transactions(symbol=symbol, since=since)
+        balance_data = self.get_balance()
         
         # 转换为pyfolio格式
         transactions_df = self.transactions_to_pyfolio_format(transactions)
-        positions_df = self.positions_to_pyfolio_format(None, transactions_df)
+        
+        # 使用余额数据生成positions
+        if balance_data:
+            positions_df = self.balance_to_pyfolio_format(balance_data, transactions_df)
+        else:
+            # 如果没有余额数据，使用交易数据计算
+            positions_df = self.positions_to_pyfolio_format(None, transactions_df)
+        
         returns_series = self.calculate_returns(transactions_df)
         
         # 保存数据
@@ -472,10 +566,22 @@ class BinanceTransactions:
         # 打印摘要
         logger.info("=== 数据摘要 ===")
         logger.info(f"交易记录数量: {len(transactions)}")
+        logger.info(f"余额资产数量: {len(balance_data)}")
         
         if not transactions_df.empty:
             logger.info(f"总交易额: {transactions_df['txn_volume'].sum():.2f} USDT")
             logger.info(f"总交易数量: {transactions_df['txn_shares'].sum():.6f}")
+        
+        if not positions_df.empty:
+            # 检查是否有USDT列，如果没有则使用cash列
+            if 'USDT' in positions_df.columns:
+                total_value = positions_df.drop('USDT', axis=1).sum().sum() + positions_df['USDT'].sum()
+                logger.info(f"总持仓价值: {total_value:.2f} USDT")
+                logger.info(f"USDT余额: {positions_df['USDT'].sum():.2f} USDT")
+            else:
+                total_value = positions_df.drop('cash', axis=1).sum().sum() + positions_df['cash'].sum()
+                logger.info(f"总持仓价值: {total_value:.2f} USDT")
+                logger.info(f"现金余额: {positions_df['cash'].sum():.2f} USDT")
         
         if not returns_series.empty:
             logger.info(f"总收益率: {(returns_series.sum() * 100):.2f}%")
@@ -484,7 +590,8 @@ class BinanceTransactions:
         return {
             'transactions': transactions_df,
             'positions': positions_df,
-            'returns': returns_series
+            'returns': returns_series,
+            'balance': balance_data
         }
 
 def main():
