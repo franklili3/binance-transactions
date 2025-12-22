@@ -289,14 +289,14 @@ class BinanceTransactions:
                 end_date = datetime.now(tz=timezone.utc)
                 start_date = end_date - timedelta(days=days)
             else:
-                # 转换日期字符串为datetime对象
-                if start_date:
-                    start_date = pd.to_datetime(start_date, tz='UTC')
-                if end_date:
-                    end_date = pd.to_datetime(end_date, tz='UTC')
-                elif start_date:
-                    # 只有开始日期，使用当前时间作为结束日期
-                    end_date = datetime.now(tz=timezone.utc)
+            # 转换日期字符串为datetime对象
+            if start_date:
+                start_date = pd.to_datetime(start_date).tz_localize('UTC')
+            if end_date:
+                end_date = pd.to_datetime(end_date).tz_localize('UTC')
+            elif start_date:
+                # 只有开始日期，使用当前时间作为结束日期
+                end_date = datetime.now(tz=timezone.utc)
             
             # 转换为毫秒时间戳
             since = int(start_date.timestamp() * 1000)
