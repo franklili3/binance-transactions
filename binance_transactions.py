@@ -144,12 +144,12 @@ class BinanceTransactions:
     
     def get_all_transactions(self, symbol=None, since=None, limit=None, days=None):
         """
-        获取所有交易记录
+        获取所有交易记录（支持分页下载）
         
         Args:
             symbol (str): 交易对，如'BTC/USDT'
             since (int): 开始时间戳（毫秒）
-            limit (int): 限制数量
+            limit (int): 每页限制数量（默认1000）
             days (int): 天数（用于计算since）
             
         Returns:
@@ -163,6 +163,10 @@ class BinanceTransactions:
                 else:
                     since = int(datetime(2025, 4, 1, tzinfo=timezone.utc).timestamp() * 1000)
             
+            # 设置默认每页限制
+            if limit is None:
+                limit = 1000  # 币安API的最大限制
+            
             # 如果没有指定交易对，尝试获取主要交易对的交易记录
             if not symbol:
                 major_symbols = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'ADA/USDT', 'SOL/USDT']
@@ -171,7 +175,7 @@ class BinanceTransactions:
                 for sym in major_symbols:
                     try:
                         logger.debug(f"尝试获取 {sym} 的交易记录")
-                        sym_transactions = self.exchange.fetch_my_trades(symbol=sym, since=since, limit=limit)
+                        sym_transactions = self._get_transactions_with_pagination(sym, since, limit)
                         if sym_transactions:
                             all_transactions.extend(sym_transactions)
                             logger.info(f"获取到 {sym} 的 {len(sym_transactions)} 条交易记录")
@@ -182,26 +186,128 @@ class BinanceTransactions:
                 logger.info(f"总共获取到 {len(all_transactions)} 条交易记录")
                 return all_transactions
             else:
-                # 指定了交易对，直接获取
-                logger.debug(f"调用fetch_my_trades，参数: symbol={symbol}, since={since}, limit={limit}")
-                transactions = self.exchange.fetch_my_trades(symbol=symbol, since=since, limit=limit)
+                # 指定了交易对，使用分页获取
+                logger.debug(f"使用分页获取交易记录，参数: symbol={symbol}, since={since}, limit={limit}")
+                transactions = self._get_transactions_with_pagination(symbol, since, limit)
                 
                 # 验证返回的数据
                 if transactions is None:
-                    logger.warning("fetch_my_trades返回None，返回空列表")
+                    logger.warning("分页获取交易记录返回None，返回空列表")
                     return []
                 
                 if not isinstance(transactions, list):
-                    logger.warning(f"fetch_my_trades返回非列表类型: {type(transactions)}，返回空列表")
+                    logger.warning(f"分页获取交易记录返回非列表类型: {type(transactions)}，返回空列表")
                     return []
                 
-                logger.info(f"获取到 {len(transactions)} 条交易记录")
+                logger.info(f"分页获取到 {len(transactions)} 条交易记录")
                 return transactions
                 
         except Exception as e:
             logger.error(f"获取交易记录失败: {e}")
             logger.debug(f"错误详情: {type(e).__name__}: {str(e)}")
             return []
+    
+    def _get_transactions_with_pagination(self, symbol, since, limit=1000):
+        """
+        分页获取交易记录
+        
+        Args:
+            symbol (str): 交易对
+            since (int): 开始时间戳（毫秒）
+            limit (int): 每页限制数量
+            
+        Returns:
+            list: 所有交易记录
+        """
+        all_transactions = []
+        from_id = None
+        page_count = 0
+        max_pages = 50  # 防止无限循环，最多50页
+        
+        while True:
+            try:
+                page_count += 1
+                logger.debug(f"获取第 {page_count} 页交易记录...")
+                
+                # 构建请求参数
+                params = {
+                    'symbol': symbol,
+                    'since': since,
+                    'limit': limit
+                }
+                
+                # 如果有from_id，添加到参数中（用于分页）
+                if from_id is not None:
+                    params['fromId'] = from_id
+                
+                # 获取当前页的交易记录
+                transactions = self.exchange.fetch_my_trades(**params)
+                
+                if not transactions:
+                    logger.debug(f"第 {page_count} 页没有交易记录，停止分页")
+                    break
+                
+                # 添加到总列表
+                all_transactions.extend(transactions)
+                logger.debug(f"第 {page_count} 页获取到 {len(transactions)} 条交易记录")
+                
+                # 检查是否还有更多数据
+                if len(transactions) < limit:
+                    logger.debug(f"第 {page_count} 页数据不足 {limit} 条，表示已经是最后一页")
+                    break
+                
+                # 获取最后一条记录的ID，用于下一页
+                last_transaction = transactions[-1]
+                if 'id' in last_transaction:
+                    from_id = int(last_transaction['id']) + 1
+                    logger.debug(f"下一页从ID {from_id} 开始")
+                else:
+                    # 如果没有ID字段，使用时间戳分页
+                    last_timestamp = last_transaction['timestamp']
+                    from_id = last_timestamp + 1
+                    logger.debug(f"使用时间戳分页，下一页从时间戳 {from_id} 开始")
+                
+                # 防止无限循环
+                if page_count >= max_pages:
+                    logger.warning(f"已达到最大页数限制 {max_pages}，停止分页")
+                    break
+                
+                # 添加延迟避免API限制
+                import time
+                time.sleep(0.1)  # 100ms延迟
+                
+            except ccxt.RateLimitExceeded as e:
+                logger.warning(f"遇到API限制，等待后重试: {e}")
+                import time
+                time.sleep(1)  # 等待1秒后重试
+                continue
+            except Exception as e:
+                logger.error(f"获取第 {page_count} 页交易记录失败: {e}")
+                break
+        
+        # 去重（基于交易ID和时间戳）
+        unique_transactions = []
+        seen_ids = set()
+        seen_timestamps = set()
+        
+        for tx in all_transactions:
+            tx_id = tx.get('id')
+            tx_timestamp = tx.get('timestamp')
+            
+            # 使用ID或时间戳去重
+            identifier = tx_id if tx_id else tx_timestamp
+            if identifier not in seen_ids and identifier not in seen_timestamps:
+                seen_ids.add(tx_id)
+                seen_timestamps.add(tx_timestamp)
+                unique_transactions.append(tx)
+        
+        if len(unique_transactions) < len(all_transactions):
+            logger.info(f"去重后剩余 {len(unique_transactions)} 条交易记录（去重前: {len(all_transactions)} 条）")
+        
+        # 按时间排序
+        unique_transactions.sort(key=lambda x: x['timestamp'])
+        
+        return unique_transactions
     
     def get_all_orders(self, symbol=None, since=None, limit=None):
         """
