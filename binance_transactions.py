@@ -665,36 +665,17 @@ class BinanceTransactions:
             # 逐日处理交易数据
             for i, date in enumerate(date_range):
                 if i > 0:
-                    # 继承前一天的资产数量（正确处理价值到数量的转换）
+                    # 继承前一天的资产数量（直接继承数量，不需要转换）
                     prev_date = date_range[i-1]
                     for asset in all_assets:
                         if asset == 'cash':
                             # 现金直接继承数量
                             current_quantities[asset] = positions_df.iloc[i-1, positions_df.columns.get_loc(asset)]
                         else:
-                            # 对于非现金资产，需要从价值转换为数量
-                            prev_value = positions_df.iloc[i-1, positions_df.columns.get_loc(asset)]
-                            if prev_value > 0:
-                                if asset == 'BTC':
-                                    if prev_date in btc_price_df.index:
-                                        btc_price = btc_price_df.loc[prev_date, 'close']
-                                    else:
-                                        nearest_date = btc_price_df.index[btc_price_df.index.get_indexer([prev_date], method='nearest')[0]]
-                                        btc_price = btc_price_df.loc[nearest_date, 'close']
-                                    # 将前一天的价值转换为数量
-                                    if np.isfinite(btc_price) and btc_price > 0:
-                                        current_quantities[asset] = prev_value / btc_price
-                                    else:
-                                        current_quantities[asset] = 0.0
-                                else:
-                                    # 其他资产使用估算价格转换为数量
-                                    estimated_price = self._get_asset_price_estimate(asset)
-                                    if np.isfinite(estimated_price) and estimated_price > 0:
-                                        current_quantities[asset] = prev_value / estimated_price
-                                    else:
-                                        current_quantities[asset] = 0.0
-                            else:
-                                current_quantities[asset] = 0.0
+                            # 对于非现金资产，直接继承前一天的数量（不需要转换）
+                            # 前一天的positions_df中存储的是价值，但current_quantities应该存储数量
+                            # 所以我们需要维护一个单独的数量追踪器，而不是从价值反推数量
+                            current_quantities[asset] = current_quantities.get(asset, 0.0)
                 
                 # 处理当日的所有交易
                 date_transactions = [tx for tx in sorted_transactions 
