@@ -92,7 +92,12 @@ class BinanceTransactions:
             logger.info("未提供带单项目API，使用主账户API获取所有数据")
         
         # 测试连接
-        self._test_connection()
+        try:
+            self._test_connection()
+            logger.info("API连接测试完成")
+        except Exception as e:
+            logger.error(f"API连接测试失败: {e}")
+            raise
     
     def _test_connection(self):
         """测试API连接"""
@@ -101,16 +106,50 @@ class BinanceTransactions:
             server_time = self.exchange.fetch_time()
             logger.info(f"币安服务器时间: {datetime.fromtimestamp(server_time/1000)}")
             
-            # 然后尝试获取账户信息（需要认证）
-            balance = self.exchange.fetch_balance()
-            logger.info("API连接成功")
+            # 测试主账户API连接
+            logger.info("测试主账户API连接...")
+            logger.info(f"主账户API Key前8位: {self.main_exchange.apiKey[:8]}...")
+            try:
+                main_balance = self.main_exchange.fetch_balance()
+                logger.info("✓ 主账户API连接成功")
+                if 'info' in main_balance:
+                    account_type = main_balance['info'].get('accountType', 'UNKNOWN')
+                    logger.info(f"主账户类型: {account_type}")
+            except ccxt.AuthenticationError as e:
+                logger.error(f"✗ 主账户API认证失败: {e}")
+                logger.error(f"主账户API Key: {self.main_exchange.apiKey}")
+                logger.error("请检查主账户API密钥是否正确")
+                raise
+            except Exception as e:
+                logger.error(f"✗ 主账户API连接失败: {e}")
+                logger.error(f"错误类型: {type(e).__name__}")
+                raise
             
-            # 检查账户权限
-            if 'info' in balance:
-                account_type = balance['info'].get('accountType', 'UNKNOWN')
-                logger.info(f"账户类型: {account_type}")
+            # 如果有带单项目API，也测试连接
+            if self.copytrade_exchange:
+                logger.info("测试带单项目API连接...")
+                logger.info(f"带单项目API Key前8位: {self.copytrade_exchange.apiKey[:8]}...")
+                try:
+                    copy_balance = self.copytrade_exchange.fetch_balance()
+                    logger.info("✓ 带单项目API连接成功")
+                    if 'info' in copy_balance:
+                        account_type = copy_balance['info'].get('accountType', 'UNKNOWN')
+                        logger.info(f"带单项目账户类型: {account_type}")
+                except ccxt.AuthenticationError as e:
+                    logger.error(f"✗ 带单项目API认证失败: {e}")
+                    logger.error(f"带单项目API Key: {self.copytrade_exchange.apiKey}")
+                    logger.warning("带单项目API认证失败，将使用主账户API获取所有数据")
+                    self.exchange = self.main_exchange
+                    self.copytrade_exchange = None
+                except Exception as e:
+                    logger.warning(f"⚠ 带单项目API连接失败: {e}")
+                    logger.warning(f"错误类型: {type(e).__name__}")
+                    logger.warning("将使用主账户API获取所有数据")
+                    self.exchange = self.main_exchange
+                    self.copytrade_exchange = None
             
-            # 检查API权限
+            # 使用当前活跃的交易所检查API权限
+            logger.info(f"使用 {'带单项目API' if self.copytrade_exchange else '主账户API'} 检查权限...")
             self._check_api_permissions()
             
         except ccxt.AuthenticationError as e:
