@@ -60,28 +60,26 @@ def test_usdt_flows():
         
         logger.info(f"获取USDT转入转出记录，时间范围: {start_date} 到 {end_date}")
         
-        # 获取充值记录
-        logger.info("获取USDT充值记录...")
+        # 获取充值记录（所有币种）
+        logger.info("获取充值记录...")
         deposit_history = main_exchange.fetch_deposits(
-            coin='USDT', 
             since=since, 
             limit=1000
         )
         logger.info(f"获取到 {len(deposit_history)} 条充值记录")
         
-        # 获取提现记录
-        logger.info("获取USDT提现记录...")
+        # 获取提现记录（所有币种）
+        logger.info("获取提现记录...")
         withdrawal_history = main_exchange.fetch_withdrawals(
-            coin='USDT', 
             since=since, 
             limit=1000
         )
         logger.info(f"获取到 {len(withdrawal_history)} 条提现记录")
         
-        # 处理充值记录
+        # 处理充值记录（只保留USDT）
         deposits = []
         for record in deposit_history:
-            if record['status'] == 'ok':  # 只处理成功的充值
+            if record['status'] == 'ok' and record['currency'] == 'USDT':  # 只处理成功的USDT充值
                 deposits.append({
                     'timestamp': pd.to_datetime(record['timestamp'], unit='ms'),
                     'type': 'deposit',
@@ -92,10 +90,10 @@ def test_usdt_flows():
                     'info': record.get('info', {})
                 })
         
-        # 处理提现记录
+        # 处理提现记录（只保留USDT）
         withdrawals = []
         for record in withdrawal_history:
-            if record['status'] == 'ok':  # 只处理成功的提现
+            if record['status'] == 'ok' and record['currency'] == 'USDT':  # 只处理成功的USDT提现
                 withdrawals.append({
                     'timestamp': pd.to_datetime(record['timestamp'], unit='ms'),
                     'type': 'withdrawal',
@@ -107,7 +105,7 @@ def test_usdt_flows():
                     'info': record.get('info', {})
                 })
         
-        # 合并记录
+        # 合并USDT记录
         usdt_flows = deposits + withdrawals
         usdt_flows.sort(key=lambda x: x['timestamp'])
         
