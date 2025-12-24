@@ -1596,10 +1596,13 @@ class BinanceTransactions:
             try:
                 # 尝试获取充值记录
                 deposit_history = exchange_to_use.fetch_deposits(since=since, limit=1000)
+                logger.info(f"获取到 {len(deposit_history)} 条充值记录")
                 # 过滤USDT充值
                 usdt_deposits = [dep for dep in deposit_history if dep.get('currency') == 'USDT']
                 deposits.extend(usdt_deposits)
-                logger.info(f"获取到 {len(usdt_deposits)} 条USDT充值记录")
+                logger.info(f"其中USDT充值记录: {len(usdt_deposits)} 条")
+                for dep in usdt_deposits[:3]:  # 显示前3条
+                    logger.info(f"  {pd.to_datetime(dep['datetime'], utc=True)}: +{dep['amount']} USDT")
             except Exception as e:
                 logger.warning(f"获取USDT充值记录失败: {e}")
             
@@ -1608,10 +1611,13 @@ class BinanceTransactions:
             try:
                 # 尝试获取提现记录
                 withdrawal_history = exchange_to_use.fetch_withdrawals(since=since, limit=1000)
+                logger.info(f"获取到 {len(withdrawal_history)} 条提现记录")
                 # 过滤USDT提现
                 usdt_withdrawals = [wid for wid in withdrawal_history if wid.get('currency') == 'USDT']
                 withdrawals.extend(usdt_withdrawals)
-                logger.info(f"获取到 {len(usdt_withdrawals)} 条USDT提现记录")
+                logger.info(f"其中USDT提现记录: {len(usdt_withdrawals)} 条")
+                for wid in usdt_withdrawals[:3]:  # 显示前3条
+                    logger.info(f"  {pd.to_datetime(wid['datetime'], utc=True)}: -{wid['amount']} USDT")
             except Exception as e:
                 logger.warning(f"获取USDT提现记录失败: {e}")
             

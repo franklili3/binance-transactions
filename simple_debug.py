@@ -86,11 +86,15 @@ def simple_debug():
         signal.alarm(30)  # 30秒超时
         
         try:
-            deposits = exchange.fetch_deposits(coin='USDT', limit=10)
+            deposits = exchange.fetch_deposits(limit=10)
             signal.alarm(0)  # 取消超时
-            logger.info(f"✅ 获取到 {len(deposits)} 条USDT充值记录")
+            logger.info(f"✅ 获取到 {len(deposits)} 条充值记录")
             
-            for deposit in deposits[:3]:
+            # 过滤USDT记录
+            usdt_deposits = [d for d in deposits if d['currency'] == 'USDT']
+            logger.info(f"   其中USDT充值记录: {len(usdt_deposits)} 条")
+            
+            for deposit in usdt_deposits[:3]:
                 tx_time = pd.to_datetime(deposit['timestamp'], unit='ms')
                 amount = deposit['amount']
                 status = deposit['status']
@@ -107,11 +111,15 @@ def simple_debug():
         signal.alarm(30)  # 30秒超时
         
         try:
-            withdrawals = exchange.fetch_withdrawals(coin='USDT', limit=10)
+            withdrawals = exchange.fetch_withdrawals(limit=10)
             signal.alarm(0)  # 取消超时
-            logger.info(f"✅ 获取到 {len(withdrawals)} 条USDT提现记录")
+            logger.info(f"✅ 获取到 {len(withdrawals)} 条提现记录")
             
-            for withdrawal in withdrawals[:3]:
+            # 过滤USDT记录
+            usdt_withdrawals = [w for w in withdrawals if w['currency'] == 'USDT']
+            logger.info(f"   其中USDT提现记录: {len(usdt_withdrawals)} 条")
+            
+            for withdrawal in usdt_withdrawals[:3]:
                 tx_time = pd.to_datetime(withdrawal['timestamp'], unit='ms')
                 amount = withdrawal['amount']
                 status = withdrawal['status']

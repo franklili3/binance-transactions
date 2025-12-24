@@ -43,8 +43,8 @@ def debug_time_range_and_data():
         balance = exchange.fetch_balance()
         logger.info("✅ API连接成功")
         
-        # 获取所有USDT充值记录
-        logger.info("🔍 获取所有USDT充值记录...")
+        # 获取所有充值记录
+        logger.info("🔍 获取所有充值记录...")
         all_deposits = []
         since = None
         more_data = True
@@ -52,14 +52,16 @@ def debug_time_range_and_data():
         while more_data:
             try:
                 deposits = exchange.fetch_deposits(
-                    coin='USDT', 
                     since=since, 
                     limit=1000
                 )
                 
                 if deposits:
                     logger.info(f"   获取到 {len(deposits)} 条充值记录")
-                    all_deposits.extend(deposits)
+                    # 过滤USDT记录
+                    usdt_deposits = [d for d in deposits if d['currency'] == 'USDT']
+                    all_deposits.extend(usdt_deposits)
+                    logger.info(f"   其中USDT记录: {len(usdt_deposits)} 条")
                     # 更新since为最后一条记录的时间
                     since = deposits[-1]['timestamp'] + 1
                 else:
@@ -69,8 +71,8 @@ def debug_time_range_and_data():
                 logger.error(f"   获取充值记录时出错: {e}")
                 break
         
-        # 获取所有USDT提现记录
-        logger.info("🔍 获取所有USDT提现记录...")
+        # 获取所有提现记录
+        logger.info("🔍 获取所有提现记录...")
         all_withdrawals = []
         since = None
         more_data = True
@@ -78,14 +80,16 @@ def debug_time_range_and_data():
         while more_data:
             try:
                 withdrawals = exchange.fetch_withdrawals(
-                    coin='USDT', 
                     since=since, 
                     limit=1000
                 )
                 
                 if withdrawals:
                     logger.info(f"   获取到 {len(withdrawals)} 条提现记录")
-                    all_withdrawals.extend(withdrawals)
+                    # 过滤USDT记录
+                    usdt_withdrawals = [w for w in withdrawals if w['currency'] == 'USDT']
+                    all_withdrawals.extend(usdt_withdrawals)
+                    logger.info(f"   其中USDT记录: {len(usdt_withdrawals)} 条")
                     # 更新since为最后一条记录的时间
                     since = withdrawals[-1]['timestamp'] + 1
                 else:
