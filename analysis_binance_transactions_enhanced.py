@@ -3,138 +3,30 @@
 """
 币安交易记录分析器（增强版）
 用于分析币安交易记录CSV文件并计算收益率
-新增功能：从币安API获取比特币实时价格数据
+新增功能：从本地BTC价格文件获取比特币价格数据，并保存为pyfolio格式
 """
 
 import pandas as pd
 import numpy as np
-import requests
-from datetime import datetime, timezone, timedelta
 import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Dict, List, Tuple
 import logging
-import time
+from datetime import datetime, timezone, timedelta
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class BinancePriceAPI:
-    """币安价格API类"""
-    def __init__(self):
-        self.base_url = "https://api.binance.com"
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'BinanceTransactionAnalyzer/1.0'
-        })
-    
-    def get_historical_klines(self, symbol='BTCUSDT', interval='1d', start_time=None, end_time=None, limit=1000):
-        """获取历史K线数据"""
-        try:
-            params = {
-                'symbol': symbol,
-                'interval': interval,
-                'limit': limit
-            }
-            
-            if start_time:
-                params['startTime'] = start_time
-            if end_time:
-                params['endTime'] = end_time
-            
-            response = self.session.get(f"{self.base_url}/api/v3/klines", params=params, timeout=30)
-            response.raise_for_status()
-            
-            data = response.json()
-            if not data:
-                return pd.DataFrame()
-            
-            # 转换为DataFrame
-            df = pd.DataFrame(data, columns=[
-                'timestamp', 'open', 'high', 'low', 'close', 'volume',
-                'close_time', 'quote_asset_volume', 'number_of_trades',
-                'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-            ])
-            
-            # 转换数据类型
-            for col in ['open', 'high', 'low', 'close', 'volume']:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-            df.set_index('datetime', inplace=True)
-            
-            # 只保留需要的列
-            df = df[['open', 'high', 'low', 'close', 'volume']]
-            
-            logger.info(f"成功获取 {len(df)} 条{symbol}的历史价格数据")
-            return df
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"获取价格数据失败: {e}")
-            return pd.DataFrame()
-        except Exception as e:
-            logger.error(f"处理价格数据失败: {e}")
-            return pd.DataFrame()
-    
-    def get_price_for_date(self, date, symbol='BTCUSDT'):
-        """获取指定日期的价格数据"""
-        try:
-            # 转换日期为时间戳
-            start_of_day = datetime(date.year, date.month, date.day, 0, 0, 0, tzinfo=timezone.utc)
-            end_of_day = start_of_day + timedelta(days=1)
-            
-            start_timestamp = int(start_of_day.timestamp() * 1000)
-            end_timestamp = int(end_of_day.timestamp() * 1000)
-            
-            # 获取K线数据
-            df = self.get_historical_klines(
-                symbol=symbol,
-                interval='1d',
-                start_time=start_timestamp,
-                end_time=end_timestamp,
-                limit=1
-            )
-            
-            if not df.empty:
-                return df.iloc[0]['close']
-            else:
-                logger.warning(f"无法获取{date}的价格数据")
-                return None
-                
-        except Exception as e:
-            logger.error(f"获取{date}价格失败: {e}")
-            return None
-    
-    def get_price_range(self, start_date, end_date, symbol='BTCUSDT'):
-        """获取日期范围内的价格数据"""
-        try:
-            start_timestamp = int(start_date.timestamp() * 1000)
-            end_timestamp = int(end_date.timestamp() * 1000)
-            
-            df = self.get_historical_klines(
-                symbol=symbol,
-                interval='1d',
-                start_time=start_timestamp,
-                end_time=end_timestamp,
-                limit=1000
-            )
-            
-            return df
-            
-        except Exception as e:
-            logger.error(f"获取价格范围数据失败: {e}")
-            return pd.DataFrame()
-
 class BinanceTransactionAnalyzer:
-    def __init__(self, csv_file_path: str):
+    def __init__(self, csv_file_path: str, btc_price_file_path: str = 'btc_prices.csv'):
         """初始化分析器"""
         self.csv_file = csv_file_path
+        self.btc_price_file = btc_price_file_path
         self.raw_data = None
         self.processed_data = None
         self.asset_balances = {}
         self.daily_portfolio_value = None
-        self.price_api = BinancePriceAPI()
         self.btc_price_data = None
         
     def load_data(self):
@@ -144,82 +36,36 @@ class BinanceTransactionAnalyzer:
             logger.info(f"成功加载 {len(self.raw_data)} 条交易记录")
             logger.info(f"交易记录时间范围: {self.raw_data.iloc[0]['UTC_Time']} 到 {self.raw_data.iloc[-1]['UTC_Time']}")
             
-            # 转换时间戳为datetime对象
-            self.raw_data['UTC_Time'] = pd.to_datetime(self.raw_data['UTC_Time'])
+            # 转换时间戳为datetime对象，确保timezone一致性
+            self.raw_data['UTC_Time'] = pd.to_datetime(self.raw_data['UTC_Time']).dt.tz_localize(None)
             
             return True
         except Exception as e:
             logger.error(f"加载数据失败: {e}")
             return False
     
-    def fetch_btc_price_data(self):
-        """从币安API获取比特币价格数据"""
+    def load_btc_price_data(self):
+        """从本地CSV文件加载比特币价格数据"""
         try:
-            logger.info("从币安API获取比特币价格数据...")
+            logger.info("从本地文件加载比特币价格数据...")
             
-            # 获取交易记录的日期范围
-            if self.raw_data is None:
-                logger.error("请先加载交易数据")
-                return False
+            self.btc_price_data = pd.read_csv(self.btc_price_file)
             
-            start_date = self.raw_data['UTC_Time'].min().date()
-            end_date = self.raw_data['UTC_Time'].max().date()
+            # 转换日期格式
+            self.btc_price_data['date'] = pd.to_datetime(self.btc_price_data['date'])
+            self.btc_price_data.set_index('date', inplace=True)
             
-            # 扩展日期范围，确保覆盖所有交易日
-            start_date = start_date - timedelta(days=7)
-            end_date = end_date + timedelta(days=1)
+            # 只保留需要的列
+            self.btc_price_data = self.btc_price_data[['close_price']].rename(columns={'close_price': 'close'})
             
-            logger.info(f"获取 {start_date} 到 {end_date} 的BTC价格数据")
-            
-            # 获取历史价格数据
-            self.btc_price_data = self.price_api.get_price_range(start_date, end_date, 'BTCUSDT')
-            
-            if self.btc_price_data.empty:
-                logger.warning("无法从API获取BTC价格数据，将使用备用方法")
-                self.btc_price_data = self._get_backup_btc_prices(start_date, end_date)
-            else:
-                logger.info(f"成功获取 {len(self.btc_price_data)} 条BTC价格记录")
-                logger.info(f"BTC价格范围: {self.btc_price_data['close'].min():.2f} - {self.btc_price_data['close'].max():.2f} USDT")
+            logger.info(f"成功加载 {len(self.btc_price_data)} 条BTC价格记录")
+            logger.info(f"BTC价格范围: {self.btc_price_data['close'].min():.2f} - {self.btc_price_data['close'].max():.2f} USDT")
             
             return True
             
         except Exception as e:
-            logger.error(f"获取BTC价格数据失败: {e}")
+            logger.error(f"加载BTC价格数据失败: {e}")
             return False
-    
-    def _get_backup_btc_prices(self, start_date, end_date):
-        """备用方法：生成模拟BTC价格数据"""
-        logger.warning("使用备用方法生成模拟BTC价格数据")
-        
-        try:
-            date_range = pd.date_range(start=start_date, end=end_date, freq='D')
-            
-            # 生成模拟价格数据
-            np.random.seed(42)
-            base_price = 95000.0
-            prices = []
-            
-            for i, date in enumerate(date_range):
-                # 使用实际的价格波动模式
-                if i == 0:
-                    price = base_price
-                else:
-                    change = np.random.normal(0, 0.02)  # 2%的日波动
-                    price = max(prices[-1] * (1 + change), 1000)  # 最低价格限制
-                
-                prices.append(price)
-            
-            df = pd.DataFrame({
-                'close': prices,
-                'volume': np.random.uniform(1000, 5000, len(date_range))
-            }, index=date_range)
-            
-            logger.info(f"生成了 {len(df)} 天的模拟BTC价格数据")
-            return df
-            
-        except Exception as e:
-            logger.error(f"生成备用价格数据失败: {e}")
-            return pd.DataFrame()
     
     def analyze_transactions(self):
         """分析交易数据"""
@@ -229,9 +75,10 @@ class BinanceTransactionAnalyzer:
         
         logger.info("开始分析交易数据...")
         
-        # 获取BTC价格数据
-        if not self.fetch_btc_price_data():
-            logger.warning("无法获取BTC价格数据，将使用固定价格估算")
+        # 加载BTC价格数据
+        if not self.load_btc_price_data():
+            logger.error("无法加载BTC价格数据，分析失败")
+            return False
         
         # 按时间排序
         self.raw_data = self.raw_data.sort_values('UTC_Time')
@@ -323,10 +170,13 @@ class BinanceTransactionAnalyzer:
             return self.btc_price_data.loc[date_obj, 'close']
         
         # 如果没有精确日期，使用最近的价格
-        nearest_date = self.btc_price_data.index[
-            self.btc_price_data.index.get_indexer([date_obj], method='nearest')[0]
-        ]
-        return self.btc_price_data.loc[nearest_date, 'close']
+        try:
+            nearest_date = self.btc_price_data.index[
+                self.btc_price_data.index.get_indexer([date_obj], method='nearest')[0]
+            ]
+            return self.btc_price_data.loc[nearest_date, 'close']
+        except:
+            return 95000.0  # 默认价格
     
     def _calculate_daily_portfolio_value(self):
         """计算每日投资组合价值"""
@@ -347,8 +197,8 @@ class BinanceTransactionAnalyzer:
         
         # 遍历每个日期
         for date in date_range:
-            # 计算当日结束时的资产余额
-            end_of_day = pd.Timestamp(date, tz=timezone.utc) + pd.Timedelta(hours=23, minutes=59, seconds=59)
+            # 计算当日结束时的资产余额（移除时区信息）
+            end_of_day = pd.Timestamp(date) + pd.Timedelta(hours=23, minutes=59, seconds=59)
             
             # 获取该日期最后一笔交易后的余额
             day_balances = self.balance_history[self.balance_history['timestamp'] <= end_of_day]
@@ -362,7 +212,7 @@ class BinanceTransactionAnalyzer:
                     if asset == 'USDT':
                         portfolio_value += balance
                     elif asset == 'BTC':
-                        # 使用从API获取的BTC价格
+                        # 使用从文件获取的BTC价格
                         btc_price = self._get_btc_price_for_date(date)
                         portfolio_value += balance * btc_price
                     else:
@@ -457,6 +307,141 @@ class BinanceTransactionAnalyzer:
             self.return_stats['sharpe_ratio'] = self.return_stats['annualized_return'] / self.return_stats['volatility'] * np.sqrt(365)
         
         logger.info("收益率计算完成")
+    
+    def generate_pyfolio_data(self):
+        """生成pyfolio格式的数据"""
+        if self.daily_portfolio_value is None or self.daily_portfolio_value.empty:
+            logger.error("没有投资组合价值数据")
+            return
+        
+        logger.info("生成pyfolio格式数据...")
+        
+        # 1. 生成transactions数据
+        self._generate_transactions_pyfolio()
+        
+        # 2. 生成positions数据
+        self._generate_positions_pyfolio()
+        
+        # 3. 生成returns数据
+        self._generate_returns_pyfolio()
+        
+        logger.info("pyfolio格式数据生成完成")
+    
+    def _generate_transactions_pyfolio(self):
+        """生成transactions数据（pyfolio格式）"""
+        logger.info("生成transactions数据...")
+        
+        transactions = []
+        
+        # 从原始交易数据中提取
+        for _, row in self.raw_data.iterrows():
+            if row['Account'] == 'Spot Lead':
+                continue
+            
+            date = row['UTC_Time'].date()
+            operation = row['Operation']
+            coin = row['Coin']
+            amount = float(row['Change'])
+            
+            # 只处理买入和卖出交易
+            if operation in ['Transaction Buy', 'Transaction Sold'] and coin in ['USDT', 'BTC']:
+                # 根据操作类型确定交易金额和数量
+                if coin == 'USDT':
+                    # USDT交易：金额是USDT数量，数量按1计算
+                    txn_volume = abs(amount)  # 交易金额（USDT）
+                    txn_shares = abs(amount)  # 交易数量（USDT按1计算）
+                elif coin == 'BTC':
+                    # BTC交易：需要获取当时价格
+                    btc_price = self._get_btc_price_for_date(date)
+                    if operation == 'Transaction Buy':
+                        # 买入BTC：amount是负数（USDT减少），实际是买入BTC
+                        # 需要找到对应的BTC数量变化
+                        usdt_amount = abs(amount)
+                        btc_amount = usdt_amount / btc_price if btc_price > 0 else 0
+                        txn_volume = usdt_amount  # 交易金额（USDT）
+                        txn_shares = btc_amount   # 交易数量（BTC）
+                    else:
+                        # 卖出BTC：amount是正数（USDT增加），卖出的是BTC
+                        # 需要找到对应的BTC数量变化
+                        usdt_amount = amount
+                        btc_amount = usdt_amount / btc_price if btc_price > 0 else 0
+                        txn_volume = usdt_amount  # 交易金额（USDT）
+                        txn_shares = btc_amount   # 交易数量（BTC）
+                else:
+                    continue
+                
+                transactions.append({
+                    'date': date,
+                    'txn_volume': txn_volume,
+                    'txn_shares': txn_shares
+                })
+        
+        # 转换为DataFrame并按日期排序
+        transactions_df = pd.DataFrame(transactions)
+        if not transactions_df.empty:
+            transactions_df = transactions_df.groupby('date').agg({
+                'txn_volume': 'sum',
+                'txn_shares': 'sum'
+            }).reset_index()
+            transactions_df.set_index('date', inplace=True)
+        
+        transactions_df.to_csv('transactions_pyfolio.csv')
+        logger.info(f"transactions数据已保存到 transactions_pyfolio.csv，共 {len(transactions_df)} 条记录")
+    
+    def _generate_positions_pyfolio(self):
+        """生成positions数据（pyfolio格式）"""
+        logger.info("生成positions数据...")
+        
+        positions = []
+        
+        # 按日期计算持仓
+        for _, row in self.daily_portfolio_value.iterrows():
+            date = row['date']
+            
+            # 计算各资产的价值
+            pos_data = {
+                'date': date,
+                'USDT': row['USDT_balance'],
+                'BTC': row['BTC_balance'] * row['BTC_price'],
+                'cash': row['USDT_balance']  # 现金以USDT计
+            }
+            
+            # 添加其他资产（如果有非零余额）
+            for asset, balance in self.asset_balances.items():
+                if asset not in ['USDT', 'BTC'] and abs(balance) > 1e-8:
+                    price = self._get_price_estimate(asset, date)
+                    pos_data[asset] = balance * price
+            
+            positions.append(pos_data)
+        
+        # 转换为DataFrame并按日期排序
+        positions_df = pd.DataFrame(positions)
+        if not positions_df.empty:
+            positions_df = positions_df.sort_values('date')
+            positions_df.set_index('date', inplace=True)
+        
+        positions_df.to_csv('positions_pyfolio.csv')
+        logger.info(f"positions数据已保存到 positions_pyfolio.csv，共 {len(positions_df)} 条记录")
+    
+    def _generate_returns_pyfolio(self):
+        """生成returns数据（pyfolio格式）"""
+        logger.info("生成returns数据...")
+        
+        # 准备returns数据
+        returns_df = self.daily_portfolio_value[['date', 'daily_return']].copy()
+        returns_df = returns_df.rename(columns={'daily_return': 'returns'})
+        returns_df = returns_df.dropna()  # 删除第一天的NaN
+        
+        if not returns_df.empty:
+            returns_df.set_index('date', inplace=True)
+            returns_df.to_csv('returns_pyfolio.csv')
+            logger.info(f"returns数据已保存到 returns_pyfolio.csv，共 {len(returns_df)} 条记录")
+        else:
+            # 如果没有有效数据，创建空的DataFrame
+            empty_df = pd.DataFrame(columns=['returns'])
+            empty_df.index.name = 'date'
+            empty_df.to_csv('returns_pyfolio.csv')
+            logger.info("returns数据已保存到 returns_pyfolio.csv（空数据）")
     
     def generate_report(self):
         """生成分析报告"""
@@ -560,9 +545,9 @@ class BinanceTransactionAnalyzer:
             ax1 = axes[0, 0]
             ax1.plot(self.daily_portfolio_value['date'], self.daily_portfolio_value['portfolio_value'], 
                     label='Portfolio Value', color='blue')
-            ax1.set_title('投资组合价值变化')
-            ax1.set_xlabel('日期')
-            ax1.set_ylabel('价值 (USDT)')
+            ax1.set_title('Portfolio Value Change')
+            ax1.set_xlabel('Date')
+            ax1.set_ylabel('Value (USDT)')
             ax1.grid(True)
             ax1.legend()
             
@@ -570,27 +555,27 @@ class BinanceTransactionAnalyzer:
             ax2 = axes[0, 1]
             ax2.plot(self.daily_portfolio_value['date'], self.daily_portfolio_value['BTC_price'], 
                     label='BTC Price', color='orange')
-            ax2.set_title('BTC价格变化')
-            ax2.set_xlabel('日期')
-            ax2.set_ylabel('价格 (USDT)')
+            ax2.set_title('BTC Price Change')
+            ax2.set_xlabel('Date')
+            ax2.set_ylabel('Price (USDT)')
             ax2.grid(True)
             ax2.legend()
             
             # 日收益率分布
             ax3 = axes[1, 0]
             self.daily_portfolio_value['daily_return'].hist(bins=50, ax=ax3, color='green', alpha=0.7)
-            ax3.set_title('日收益率分布')
-            ax3.set_xlabel('收益率')
-            ax3.set_ylabel('频次')
+            ax3.set_title('Daily Return Distribution')
+            ax3.set_xlabel('Return')
+            ax3.set_ylabel('Frequency')
             ax3.grid(True)
             
             # 累计收益率
             ax4 = axes[1, 1]
             ax4.plot(self.daily_portfolio_value['date'], self.daily_portfolio_value['cumulative_return'] * 100, 
                     label='Cumulative Return', color='red')
-            ax4.set_title('累计收益率')
-            ax4.set_xlabel('日期')
-            ax4.set_ylabel('收益率 (%)')
+            ax4.set_title('Cumulative Return')
+            ax4.set_xlabel('Date')
+            ax4.set_ylabel('Return (%)')
             ax4.grid(True)
             ax4.legend()
             
@@ -602,8 +587,8 @@ class BinanceTransactionAnalyzer:
             line2 = ax5_twin.plot(self.daily_portfolio_value['date'], 
                                self.daily_portfolio_value['portfolio_value'] / self.daily_portfolio_value['BTC_price'], 
                                'r--', label='Portfolio/BTC Ratio', color='purple')
-            ax5.set_title('投资组合价值 vs BTC价格')
-            ax5.set_xlabel('日期')
+            ax5.set_title('Portfolio Value vs BTC Price')
+            ax5.set_xlabel('Date')
             ax5.set_ylabel('Portfolio Value (USDT)', color='blue')
             ax5_twin.set_ylabel('Portfolio/BTC Ratio', color='purple')
             ax5.grid(True)
@@ -613,12 +598,12 @@ class BinanceTransactionAnalyzer:
             labels = [l.get_label() for l in lines]
             ax5.legend(lines, labels, loc='upper left')
             
-            # 资产配置（饼图）
+            # Asset Allocation (Pie Chart)
             ax6 = axes[2, 1]
             asset_values = []
             asset_names = []
             
-            # 计算各资产的当前价值
+            # Calculate current value of each asset
             current_date = self.daily_portfolio_value['date'].iloc[-1]
             for asset, balance in self.asset_balances.items():
                 if abs(balance) > 1e-8:
@@ -636,7 +621,7 @@ class BinanceTransactionAnalyzer:
             
             if asset_values:
                 ax6.pie(asset_values, labels=asset_names, autopct='%1.1f%%')
-                ax6.set_title('资产配置')
+                ax6.set_title('Asset Allocation')
             
             plt.tight_layout()
             plt.savefig('portfolio_analysis_enhanced.png', dpi=300, bbox_inches='tight')
@@ -649,7 +634,7 @@ class BinanceTransactionAnalyzer:
 def main():
     """主函数"""
     # 使用您提供的交易记录文件
-    csv_file = "binance_transactions.csv"
+    csv_file = "58f7aff0-e0a5-11f0-a3f8-069f3b29e123-1.csv"
     
     # 创建分析器
     analyzer = BinanceTransactionAnalyzer(csv_file)
@@ -660,6 +645,9 @@ def main():
         if analyzer.analyze_transactions():
             # 生成报告
             analyzer.generate_report()
+            
+            # 生成pyfolio格式数据
+            analyzer.generate_pyfolio_data()
             
             # 保存结果
             analyzer.save_results()
